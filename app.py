@@ -46,7 +46,7 @@ db_config = {
     "user": "5MLJE6RAQwcNfyu.root",
     "password": os.environ.get("DB_PASSWORD"),  # 3. Pulls securely from .env
     "database": "healthcare_appointment",
-    "ssl_ca": os.path.join(os.path.dirname(__file__), "isrgrootx1.pem")
+    "ssl_ca": "isrgrootx1.pem"
 }
 
 # Create a connection pool with 10 connections
