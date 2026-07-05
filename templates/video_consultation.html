@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Consultation — HealthCare</title>
+    <meta name="description" content="Secure peer-to-peer video consultation between doctor and patient.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --violet: #7c3aed; --violet-light: #a78bfa;
+            --emerald: #10b981; --rose: #f43f5e; --amber: #f59e0b;
+            --slate-900: #0f172a; --slate-800: #1e293b; --slate-700: #334155;
+            --slate-600: #475569; --slate-400: #94a3b8; --white: #ffffff;
+            --glass: rgba(255,255,255,0.06); --glass-border: rgba(255,255,255,0.12);
+        }
+        body { font-family: 'Inter', sans-serif; background: var(--slate-900); color: var(--white); height: 100vh; overflow: hidden; position: relative; }
+        body::before {
+            content: ''; position: fixed; inset: 0; pointer-events: none;
+            background: radial-gradient(ellipse 80% 60% at 20% 10%, rgba(124,58,237,0.25) 0%, transparent 60%),
+                        radial-gradient(ellipse 60% 50% at 80% 80%, rgba(16,185,129,0.15) 0%, transparent 60%);
+        }
+        .consultation-wrapper { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 1fr auto; height: 100vh; position: relative; z-index: 1; }
+        .video-area { position: relative; background: var(--slate-900); overflow: hidden; }
+        #remote-video { width: 100%; height: 100%; object-fit: cover; display: block; }
+        #local-video {
+            position: absolute; bottom: 100px; right: 16px; width: 180px; height: 130px;
+            object-fit: cover; border-radius: 12px; border: 2px solid var(--glass-border);
+            background: var(--slate-800); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            z-index: 10; transition: border-color 0.3s;
+        }
+        #local-video:hover { border-color: var(--violet-light); }
+        .waiting-overlay {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; background: rgba(15,23,42,0.85);
+            backdrop-filter: blur(8px); z-index: 5; gap: 1.5rem; transition: opacity 0.5s;
+        }
+        .waiting-overlay.hidden { opacity: 0; pointer-events: none; }
+        .pulse-ring {
+            width: 80px; height: 80px; border-radius: 50%; background: rgba(124,58,237,0.2);
+            display: flex; align-items: center; justify-content: center; position: relative;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        .pulse-ring::before, .pulse-ring::after {
+            content: ''; position: absolute; inset: -10px; border-radius: 50%;
+            border: 2px solid rgba(124,58,237,0.4); animation: ripple 2s ease-out infinite;
+        }
+        .pulse-ring::after { animation-delay: 0.7s; }
+        @keyframes ripple { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(1.6); opacity: 0; } }
+        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+        .pulse-icon { font-size: 2rem; }
+        .waiting-title { font-size: 1.4rem; font-weight: 700; }
+        .waiting-sub { font-size: 0.9rem; color: var(--slate-400); text-align: center; max-width: 280px; line-height: 1.6; }
+        .conn-badge {
+            position: absolute; top: 16px; left: 16px; display: flex; align-items: center; gap: 6px;
+            background: var(--glass); backdrop-filter: blur(12px); border: 1px solid var(--glass-border);
+            border-radius: 20px; padding: 6px 14px; font-size: 0.78rem; font-weight: 600; z-index: 10;
+        }
+        .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); transition: background 0.3s; }
+        .conn-dot.connected { background: var(--emerald); animation: blink 1.5s infinite; }
+        .conn-dot.disconnected { background: var(--rose); }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .apt-info-badge {
+            position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+            background: var(--glass); backdrop-filter: blur(12px); border: 1px solid var(--glass-border);
+            border-radius: 20px; padding: 8px 20px; font-size: 0.82rem; font-weight: 500;
+            color: var(--slate-400); z-index: 10; white-space: nowrap;
+        }
+        .apt-info-badge strong { color: var(--white); }
+        /* Socket status debug bar */
+        .socket-status-bar {
+            position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.5); border-radius: 20px; padding: 3px 14px;
+            font-size: 0.7rem; z-index: 10; color: var(--slate-400);
+        }
+        .controls-bar {
+            grid-column: 1 / 2; display: flex; align-items: center; justify-content: center;
+            gap: 1rem; padding: 1.2rem 2rem; background: var(--glass);
+            backdrop-filter: blur(20px); border-top: 1px solid var(--glass-border);
+        }
+        .ctrl-btn {
+            display: flex; flex-direction: column; align-items: center; gap: 4px;
+            background: rgba(255,255,255,0.08); border: 1px solid var(--glass-border);
+            border-radius: 14px; padding: 12px 18px; color: var(--white);
+            font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: all 0.2s; min-width: 68px;
+        }
+        .ctrl-btn:hover { background: rgba(255,255,255,0.15); transform: translateY(-2px); }
+        .ctrl-btn.active { background: rgba(124,58,237,0.35); border-color: var(--violet-light); }
+        .ctrl-btn.muted  { background: rgba(244,63,94,0.25); border-color: rgba(244,63,94,0.5); }
+        .ctrl-icon { font-size: 1.3rem; }
+        .ctrl-btn.end-call { background: var(--rose); border-color: var(--rose); padding: 12px 28px; min-width: 90px; }
+        .ctrl-btn.end-call:hover { background: #e11d48; transform: translateY(-2px) scale(1.04); }
+        .call-timer { font-size: 0.78rem; font-weight: 600; color: var(--slate-400); font-variant-numeric: tabular-nums; }
+        .sidebar {
+            grid-row: 1 / 3; grid-column: 2 / 3; display: flex; flex-direction: column;
+            background: var(--glass); backdrop-filter: blur(20px); border-left: 1px solid var(--glass-border); overflow: hidden;
+        }
+        .sidebar-header { padding: 1.2rem 1.2rem 0.8rem; border-bottom: 1px solid var(--glass-border); }
+        .sidebar-header h3 { font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .sidebar-tabs { display: flex; gap: 4px; margin-top: 0.8rem; }
+        .tab-btn { flex: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--slate-400); font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .tab-btn.active { background: rgba(124,58,237,0.3); border-color: var(--violet-light); color: var(--white); }
+        .info-panel { padding: 1rem; flex: 1; overflow-y: auto; }
+        .info-card { background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); border-radius: 12px; padding: 1rem; margin-bottom: 0.8rem; }
+        .info-card label { font-size: 0.7rem; font-weight: 600; color: var(--slate-400); text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-bottom: 4px; }
+        .info-card p { font-size: 0.88rem; font-weight: 500; }
+        .role-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(124,58,237,0.25); border: 1px solid rgba(124,58,237,0.4); border-radius: 20px; padding: 4px 12px; font-size: 0.75rem; font-weight: 600; color: var(--violet-light); margin-bottom: 0.8rem; }
+        .chat-panel { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.6rem; scroll-behavior: smooth; }
+        .chat-messages::-webkit-scrollbar { width: 4px; }
+        .chat-messages::-webkit-scrollbar-thumb { background: var(--slate-700); border-radius: 4px; }
+        .chat-msg { display: flex; flex-direction: column; gap: 2px; max-width: 90%; }
+        .chat-msg.self { align-self: flex-end; align-items: flex-end; }
+        .chat-msg.other { align-self: flex-start; }
+        .chat-bubble { background: rgba(255,255,255,0.08); border: 1px solid var(--glass-border); border-radius: 12px; padding: 8px 12px; font-size: 0.82rem; line-height: 1.5; word-break: break-word; }
+        .chat-msg.self .chat-bubble { background: rgba(124,58,237,0.3); border-color: rgba(124,58,237,0.4); }
+        .chat-meta { font-size: 0.68rem; color: var(--slate-400); padding: 0 4px; }
+        .chat-input-area { padding: 0.8rem; border-top: 1px solid var(--glass-border); display: flex; gap: 8px; }
+        .chat-input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border); border-radius: 10px; padding: 8px 12px; color: var(--white); font-size: 0.83rem; font-family: 'Inter', sans-serif; outline: none; }
+        .chat-input:focus { border-color: var(--violet-light); }
+        .chat-send-btn { background: rgba(124,58,237,0.4); border: 1px solid rgba(124,58,237,0.5); border-radius: 10px; color: var(--white); padding: 8px 14px; cursor: pointer; font-size: 1rem; }
+        .ended-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.95); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; gap: 1.5rem; text-align: center; }
+        .ended-overlay.show { display: flex; }
+        .ended-overlay h2 { font-size: 2rem; font-weight: 800; }
+        .ended-overlay p { color: var(--slate-400); }
+        .ended-icon { font-size: 4rem; margin-bottom: 0.5rem; }
+        .ended-btn { background: var(--violet); border: none; border-radius: 12px; padding: 14px 32px; color: var(--white); font-size: 1rem; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+        @media (max-width: 768px) {
+            .consultation-wrapper { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+            .sidebar { display: none; }
+            #local-video { width: 120px; height: 90px; bottom: 90px; right: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Safe JS config via data-attributes (avoids Jinja→JS injection) -->
+<div id="js-config" style="display:none"
+     data-room="{{ apt.room_token or '' }}"
+     data-apt="{{ apt.appointment_id }}"
+     data-role="{{ role }}"
+     data-name="{{ user_name | replace('"', '&quot;') }}">
+</div>
+
+<div class="consultation-wrapper">
+
+    <!-- VIDEO AREA -->
+    <div class="video-area">
+        <video id="remote-video" autoplay playsinline></video>
+        <video id="local-video"  autoplay playsinline muted></video>
+
+        <div class="waiting-overlay" id="waiting-overlay">
+            <div class="pulse-ring"><span class="pulse-icon">📡</span></div>
+            <h2 class="waiting-title">Waiting for other participant…</h2>
+            <p class="waiting-sub">
+                {% if role == 'doctor' %}
+                    Your patient will join shortly. Leave this page open.
+                {% else %}
+                    Your doctor will start the session shortly. Please stay on this page.
+                {% endif %}
+            </p>
+        </div>
+
+        <div class="conn-badge">
+            <div class="conn-dot" id="conn-dot"></div>
+            <span id="conn-label">Connecting…</span>
+        </div>
+
+        <div class="apt-info-badge">
+            {% if role == 'doctor' %}
+                Consulting <strong>{{ apt.patient_name }}</strong>
+            {% else %}
+                Consulting <strong>Dr. {{ apt.doctor_name }}</strong> · {{ apt.specialization }}
+            {% endif %}
+        </div>
+
+        <div class="socket-status-bar" id="socket-status">⏳ Connecting to signaling server…</div>
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="controls-bar">
+        <button class="ctrl-btn" id="btn-mic" onclick="toggleMic()">
+            <span class="ctrl-icon" id="mic-icon">🎙️</span>
+            <span id="mic-label">Mute</span>
+        </button>
+        <button class="ctrl-btn" id="btn-cam" onclick="toggleCamera()">
+            <span class="ctrl-icon" id="cam-icon">📷</span>
+            <span id="cam-label">Camera Off</span>
+        </button>
+        <button class="ctrl-btn" id="btn-screen" onclick="toggleScreen()">
+            <span class="ctrl-icon">🖥️</span>
+            <span>Share Screen</span>
+        </button>
+        <button class="ctrl-btn end-call" onclick="endCall()">
+            <span class="ctrl-icon">📵</span>
+            <span>End Call</span>
+        </button>
+        <div class="call-timer" id="call-timer">00:00</div>
+    </div>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h3><span>💊</span> Consultation Room</h3>
+            <div class="sidebar-tabs">
+                <button class="tab-btn active" onclick="showTab('info', this)">Info</button>
+                <button class="tab-btn" onclick="showTab('chat', this)">💬 Chat</button>
+            </div>
+        </div>
+
+        <div class="info-panel" id="panel-info">
+            <div class="role-badge">
+                {% if role == 'doctor' %}👨‍⚕️ Doctor{% else %}🧑‍💻 Patient{% endif %}
+                &nbsp;· {{ user_name }}
+            </div>
+            <div class="info-card">
+                <label>Appointment #</label>
+                <p>#APT-{{ apt.appointment_id }}</p>
+            </div>
+            <div class="info-card">
+                <label>Date &amp; Time</label>
+                <p>{{ apt.appointment_date }} at {{ apt.appointment_time }}</p>
+            </div>
+            {% if role == 'doctor' %}
+            <div class="info-card"><label>Patient</label><p>{{ apt.patient_name }}</p></div>
+            {% else %}
+            <div class="info-card"><label>Doctor</label><p>Dr. {{ apt.doctor_name }}</p></div>
+            <div class="info-card"><label>Specialization</label><p>{{ apt.specialization }}</p></div>
+            {% endif %}
+            <div class="info-card" id="peer-status-card" style="border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.06);">
+                <label>Peer Status</label>
+                <p id="peer-status-text" style="color:var(--amber);">⏳ Not connected yet</p>
+            </div>
+            <div style="margin-top:1.5rem;">
+                {% if role == 'doctor' %}
+                <a href="{{ url_for('doctor_dashboard') }}" style="display:block;text-align:center;color:var(--slate-400);font-size:0.8rem;text-decoration:none;padding:8px;border:1px solid var(--glass-border);border-radius:10px;" onclick="return confirm('Leave room?')">← Back to Dashboard</a>
+                {% else %}
+                <a href="{{ url_for('patient_dashboard') }}" style="display:block;text-align:center;color:var(--slate-400);font-size:0.8rem;text-decoration:none;padding:8px;border:1px solid var(--glass-border);border-radius:10px;" onclick="return confirm('Leave room?')">← Back to Dashboard</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="chat-panel" id="panel-chat">
+            <div class="chat-messages" id="chat-messages">
+                <div class="chat-msg other">
+                    <div class="chat-bubble">👋 Chat is live for both participants.</div>
+                    <div class="chat-meta">System</div>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input class="chat-input" id="chat-input" placeholder="Type a message…" onkeydown="if(event.key==='Enter') sendChat()">
+                <button class="chat-send-btn" onclick="sendChat()">➤</button>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<!-- Call Ended Overlay -->
+<div class="ended-overlay" id="ended-overlay">
+    <div class="ended-icon">📵</div>
+    <h2>Call Ended</h2>
+    <p>The consultation session has been completed.</p>
+    {% if role == 'doctor' %}
+    <a href="{{ url_for('doctor_dashboard') }}" class="ended-btn">Go to Dashboard</a>
+    {% else %}
+    <a href="{{ url_for('patient_dashboard') }}" class="ended-btn">Go to Dashboard</a>
+    {% endif %}
+</div>
+
+<script>
+// ── READ CONFIG FROM DATA ATTRIBUTES (safe, no JS injection) ──────
+const cfg       = document.getElementById('js-config').dataset;
+const ROOM_TOKEN = cfg.room  || '';
+const APT_ID     = parseInt(cfg.apt, 10);
+const ROLE       = cfg.role  || '';
+const USER_NAME  = cfg.name  || '';
+
+const STUN_CONFIG = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+    ]
+};
+
+// ── STATE ─────────────────────────────────────────────────────────
+let localStream    = null;
+let peerConnection = null;
+let screenStream   = null;
+let micMuted       = false;
+let camOff         = false;
+let screenSharing  = false;
+let callStartTime  = null;
+let timerInterval  = null;
+
+// ── SOCKET.IO ─────────────────────────────────────────────────────
+const socket = io({
+    transports: ['websocket', 'polling'],
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    autoConnect: false // Do not connect until camera is ready
+});
+
+socket.on('connect', () => {
+    console.log('[Socket] Connected:', socket.id);
+    setStatus('✅ Signaling server connected', '#10b981');
+    updateConnBadge('waiting');
+    if (ROOM_TOKEN) {
+        socket.emit('join_room', { room: ROOM_TOKEN, role: ROLE, name: USER_NAME });
+    }
+});
+
+socket.on('connect_error', (err) => {
+    console.error('[Socket] Error:', err.message);
+    setStatus('❌ Signaling error: ' + err.message, '#f43f5e');
+});
+
+socket.on('disconnect', (reason) => {
+    console.warn('[Socket] Disconnected:', reason);
+    setStatus('⚠️ Disconnected from signaling server', '#f59e0b');
+    updateConnBadge('disconnected');
+});
+
+// ── SIGNALING: SOMEONE IS ALREADY IN THE ROOM WHEN YOU JOIN ───────
+socket.on('peer_present', async (data) => {
+    console.log('[Socket] Peer present:', data);
+    updatePeerStatus(true, data.name, data.role);
+    appendSys(`${data.role === 'doctor' ? '👨‍⚕️ Dr. ' : '🧑‍💻 '}${data.name} is already in the room.`);
+    // Doctor ALWAYS initiates the offer
+    if (ROLE === 'doctor') await createOffer();
+});
+
+// ── SIGNALING: A NEW PERSON JOINED AFTER YOU ──────────────────────
+socket.on('peer_joined', async (data) => {
+    console.log('[Socket] Peer joined:', data);
+    updatePeerStatus(true, data.name, data.role);
+    appendSys(`${data.role === 'doctor' ? '👨‍⚕️ Dr. ' : '🧑‍💻 '}${data.name} joined the room.`);
+    // Respond to the new joiner so they know we are already here
+    socket.emit('peer_present', { room: ROOM_TOKEN, role: ROLE, name: USER_NAME });
+    // Doctor initiates WebRTC offer when patient joins
+    if (ROLE === 'doctor') await createOffer();
+});
+
+socket.on('peer_left', () => {
+    console.warn('[Socket] Peer left.');
+    appendSys('⚠️ The other participant left the room.');
+    updatePeerStatus(false, '', '');
+    updateConnBadge('disconnected');
+});
+
+socket.on('offer', async (data) => {
+    console.log('[Socket] Offer received');
+    if (!peerConnection) initPeerConnection();
+    try {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('answer', { room: ROOM_TOKEN, sdp: answer });
+    } catch(e) { console.error('[WebRTC] Offer error:', e); }
+});
+
+socket.on('answer', async (data) => {
+    console.log('[Socket] Answer received');
+    if (peerConnection && peerConnection.signalingState !== 'stable') {
+        try { await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp)); }
+        catch(e) { console.error('[WebRTC] Answer error:', e); }
+    }
+});
+
+socket.on('ice_candidate', async (data) => {
+    if (peerConnection && data.candidate) {
+        try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+        catch(e) { console.warn('[ICE] Error:', e); }
+    }
+});
+
+socket.on('call_ended', () => showCallEnded());
+
+socket.on('chat_message', (data) => {
+    appendChat(data.message, data.sender, data.sender === USER_NAME);
+});
+
+// ── WEBRTC ────────────────────────────────────────────────────────
+function initPeerConnection() {
+    if (peerConnection) peerConnection.close();
+    peerConnection = new RTCPeerConnection(STUN_CONFIG);
+    if (localStream) {
+        localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
+    }
+    peerConnection.onicecandidate = (e) => {
+        if (e.candidate) socket.emit('ice_candidate', { room: ROOM_TOKEN, candidate: e.candidate });
+    };
+    peerConnection.ontrack = (e) => {
+        if (e.streams && e.streams[0]) {
+            document.getElementById('remote-video').srcObject = e.streams[0];
+            hideWaiting();
+        }
+    };
+    peerConnection.onconnectionstatechange = () => {
+        const s = peerConnection.connectionState;
+        console.log('[WebRTC]', s);
+        updateConnBadge(s);
+        if (s === 'connected' && !callStartTime) startTimer();
+        if (s === 'failed') { appendSys('⚠️ Connection failed — retrying…'); peerConnection.restartIce(); }
+    };
+}
+
+async function createOffer() {
+    if (!peerConnection) initPeerConnection();
+    try {
+        updateConnBadge('connecting');
+        const offer = await peerConnection.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('offer', { room: ROOM_TOKEN, sdp: offer });
+        console.log('[WebRTC] Offer sent');
+    } catch(e) { console.error('[WebRTC] createOffer:', e); }
+}
+
+// ── MEDIA ─────────────────────────────────────────────────────────
+async function startLocalMedia() {
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('local-video').srcObject = localStream;
+    } catch(e) {
+        console.error('[Media Error]', e.name, e.message);
+        let reason = e.name + ': ' + e.message;
+        if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+            reason = "Your webcam is already in use by another application (like your other browser tab).";
+        }
+        appendSys('⚠️ Camera/mic error: ' + reason);
+        alert('Could not start camera/mic\\n\\nReason: ' + reason);
+    }
+}
+
+function toggleMic() {
+    if (!localStream) {
+        alert('Cannot toggle microphone: Camera/Mic permissions denied, or you are not on a secure connection (HTTPS or localhost).');
+        return;
+    }
+    micMuted = !micMuted;
+    localStream.getAudioTracks().forEach(t => t.enabled = !micMuted);
+    document.getElementById('mic-icon').textContent  = micMuted ? '🔇' : '🎙️';
+    document.getElementById('mic-label').textContent = micMuted ? 'Unmute' : 'Mute';
+    document.getElementById('btn-mic').classList.toggle('muted', micMuted);
+}
+
+function toggleCamera() {
+    if (!localStream) {
+        alert('Cannot toggle camera: Camera/Mic permissions denied, or you are not on a secure connection (HTTPS or localhost).');
+        return;
+    }
+    camOff = !camOff;
+    localStream.getVideoTracks().forEach(t => t.enabled = !camOff);
+    document.getElementById('cam-icon').textContent  = camOff ? '🚫' : '📷';
+    document.getElementById('cam-label').textContent = camOff ? 'Camera On' : 'Camera Off';
+    document.getElementById('btn-cam').classList.toggle('muted', camOff);
+}
+
+async function toggleScreen() {
+    const btn = document.getElementById('btn-screen');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        alert('Screen sharing is not supported on this device or browser (e.g., mobile phones).');
+        return;
+    }
+    if (!screenSharing) {
+        try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const track = screenStream.getVideoTracks()[0];
+            if (peerConnection) {
+                const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) sender.replaceTrack(track);
+            }
+            document.getElementById('local-video').srcObject = screenStream;
+            screenSharing = true;
+            btn.classList.add('active');
+            track.onended = stopScreen;
+        } catch(e) { console.warn('[Screen] Cancelled'); }
+    } else { stopScreen(); }
+}
+
+function stopScreen() {
+    if (!screenSharing) return;
+    screenSharing = false;
+    document.getElementById('btn-screen').classList.remove('active');
+    if (localStream) {
+        const track = localStream.getVideoTracks()[0];
+        if (peerConnection && track) {
+            const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender) sender.replaceTrack(track);
+        }
+        document.getElementById('local-video').srcObject = localStream;
+    }
+}
+
+function endCall() {
+    if (!confirm('End the consultation call?')) return;
+    socket.emit('end_call', { room: ROOM_TOKEN });
+    fetch(`/api/consultation/end/${APT_ID}`, { method: 'POST', credentials: 'same-origin' });
+    showCallEnded();
+}
+
+// ── UI HELPERS ────────────────────────────────────────────────────
+function hideWaiting() { document.getElementById('waiting-overlay').classList.add('hidden'); }
+
+function showCallEnded() {
+    stopTimer();
+    if (peerConnection) { peerConnection.close(); peerConnection = null; }
+    document.getElementById('ended-overlay').classList.add('show');
+}
+
+function updateConnBadge(state) {
+    const dot   = document.getElementById('conn-dot');
+    const label = document.getElementById('conn-label');
+    const map   = {
+        waiting:      ['',             'Waiting for peer…'],
+        connecting:   ['',             'Connecting…'],
+        connected:    ['connected',    '🟢 Connected'],
+        failed:       ['disconnected', 'Connection Failed'],
+        disconnected: ['disconnected', 'Disconnected'],
+        closed:       ['disconnected', 'Call Ended'],
+    };
+    const [cls, txt] = map[state] || ['', state];
+    dot.className     = 'conn-dot ' + cls;
+    label.textContent = txt;
+}
+
+function updatePeerStatus(online, name, role) {
+    const card = document.getElementById('peer-status-card');
+    const text = document.getElementById('peer-status-text');
+    if (online) {
+        card.style.cssText = 'border-color:rgba(16,185,129,0.4);background:rgba(16,185,129,0.06);';
+        text.style.color   = 'var(--emerald)';
+        text.textContent   = `✅ ${role === 'doctor' ? '👨‍⚕️ Dr. ' : '🧑‍💻 '}${name} connected`;
+    } else {
+        card.style.cssText = 'border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.06);';
+        text.style.color   = 'var(--amber)';
+        text.textContent   = '⚠️ Peer disconnected';
+    }
+}
+
+function setStatus(msg, color) {
+    const el = document.getElementById('socket-status');
+    if (el) { el.textContent = msg; el.style.color = color || '#94a3b8'; }
+}
+
+function showTab(tab, btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-info').style.display = tab === 'info' ? 'block' : 'none';
+    document.getElementById('panel-chat').style.display = tab === 'chat' ? 'flex' : 'none';
+}
+
+// ── CHAT ──────────────────────────────────────────────────────────
+function sendChat() {
+    const input = document.getElementById('chat-input');
+    const msg   = input.value.trim();
+    if (!msg || !socket.connected) return;
+    socket.emit('chat_message', { room: ROOM_TOKEN, message: msg, sender: USER_NAME });
+    input.value = '';
+}
+
+function appendChat(text, sender, isSelf) {
+    const c   = document.getElementById('chat-messages');
+    const div = document.createElement('div');
+    div.className = `chat-msg ${isSelf ? 'self' : 'other'}`;
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    div.innerHTML = `<div class="chat-bubble">${esc(text)}</div><div class="chat-meta">${esc(sender)} · ${now}</div>`;
+    c.appendChild(div);
+    c.scrollTop = c.scrollHeight;
+    if (!isSelf) {
+        const btn = document.querySelector('.tab-btn:nth-child(2)');
+        if (btn && !btn.classList.contains('active')) {
+            btn.textContent = '💬 Chat ●';
+            setTimeout(() => { btn.textContent = '💬 Chat'; }, 3000);
+        }
+    }
+}
+
+function appendSys(msg) { appendChat(msg, 'System', false); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── TIMER ─────────────────────────────────────────────────────────
+function startTimer() {
+    callStartTime = Date.now();
+    timerInterval = setInterval(() => {
+        const e = Math.floor((Date.now() - callStartTime) / 1000);
+        const mm = String(Math.floor(e / 60)).padStart(2,'0');
+        const ss = String(e % 60).padStart(2,'0');
+        document.getElementById('call-timer').textContent = `${mm}:${ss}`;
+    }, 1000);
+}
+function stopTimer() { if (timerInterval) clearInterval(timerInterval); }
+
+// ── INIT ──────────────────────────────────────────────────────────
+(async function init() {
+    document.getElementById('panel-chat').style.display = 'none';
+    document.getElementById('panel-info').style.display = 'block';
+    await startLocalMedia();
+    
+    // Connect to signaling server ONLY AFTER camera is ready
+    socket.connect();
+    
+    // If no room token (edge case), create one and reload
+    if (!ROOM_TOKEN) {
+        const res = await fetch(`/api/consultation/create/${APT_ID}`, { method: 'POST', credentials: 'same-origin' });
+        const d   = await res.json();
+        if (d.room_token) location.reload();
+        else appendSys('⚠️ Could not create consultation room.');
+    }
+})();
+</script>
+</body>
+</html>
