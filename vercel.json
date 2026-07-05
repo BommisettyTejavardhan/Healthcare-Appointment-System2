@@ -1,5 +1,4 @@
 {
-  "version": 2,
   "builds": [
     {
       "src": "app.py",
@@ -11,5 +10,9 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
-  ]
+  ],
+  "env": {
+    "GOOGLE_CLIENT_ID": "PASTE_YOUR_ID_HERE",
+    "GOOGLE_CLIENT_SECRET": "PASTE_YOUR_SECRET_HERE"
+  }
 }
